@@ -167,23 +167,18 @@ class IntearEventStream:
 
 def format_event_summary(event: Dict[str, Any], template: str, alert_name: str) -> str:
     """Format event summary for PagerDuty"""
-    # Extract common fields
+    # Extract account_id for fallback
     account_id = event.get("account_id", "unknown")
     
-    # For NEP-297 events
-    event_standard = event.get("event_standard", "")
-    event_event = event.get("event_event", "")
+    # Create format dict: start with event data, add alert_name
+    # This allows template to use any event field plus alert_name
+    format_dict = {**event, "alert_name": alert_name}
     
     # Try to format with available data
     try:
-        return template.format(
-            alert_name=alert_name,
-            account_id=account_id,
-            event_standard=event_standard,
-            event_event=event_event,
-            **event
-        )
+        return template.format(**format_dict)
     except KeyError:
+        # Fallback if template uses a field that doesn't exist
         return f"{alert_name}: Event from {account_id}"
 
 
@@ -304,6 +299,7 @@ def create_house_of_stake_config(routing_key: str) -> EventMonitorConfig:
                 filter={
                     "And": [
                         {"path": "account_id", "operator": {"Equals": "vote.dao"}},
+                        # {"path": "account_id", "operator": {"Equals": "vote.staging-dao.near"}},
                         {"path": "event_standard", "operator": {"Equals": "venear"}},
                         {"path": "event_event", "operator": {"Equals": "create_proposal"}},
                     ]
@@ -319,6 +315,7 @@ def create_house_of_stake_config(routing_key: str) -> EventMonitorConfig:
                 filter={
                     "And": [
                         {"path": "account_id", "operator": {"Equals": "vote.dao"}},
+                        # {"path": "account_id", "operator": {"Equals": "vote.staging-dao.near"}},
                         {"path": "event_standard", "operator": {"Equals": "venear"}},
                         {"path": "event_event", "operator": {"Equals": "proposal_approve"}},
                     ]
@@ -334,6 +331,7 @@ def create_house_of_stake_config(routing_key: str) -> EventMonitorConfig:
                 filter={
                     "And": [
                         {"path": "account_id", "operator": {"Equals": "vote.dao"}},
+                        # {"path": "account_id", "operator": {"Equals": "vote.staging-dao.near"}},
                         {"path": "event_standard", "operator": {"Equals": "venear"}},
                         {"path": "event_event", "operator": {"Equals": "add_vote"}},
                     ]
