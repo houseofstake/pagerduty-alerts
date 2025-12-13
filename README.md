@@ -222,7 +222,7 @@ All alerts include:
 
 ### Railway
 
-Railway can automatically detect and deploy your Rust application:
+Railway can deploy your Rust application using Docker or Nixpacks:
 
 1. **Install Railway CLI** (optional, for local deployment):
    ```bash
@@ -232,7 +232,7 @@ Railway can automatically detect and deploy your Rust application:
 2. **Deploy via Railway Dashboard**:
    - Go to [railway.app](https://railway.app) and create a new project
    - Connect your GitHub repository (or deploy from CLI)
-   - Railway will auto-detect the Rust project in the `rust/` directory
+   - Railway will use the `Dockerfile` (recommended) or `nixpacks.toml` configuration
 
 3. **Set Environment Variables**:
    In Railway dashboard → Variables, add:
@@ -241,11 +241,14 @@ Railway can automatically detect and deploy your Rust application:
 
 4. **Deploy**:
    Railway will automatically:
-   - Build the Rust project with `cargo build --release`
+   - Build the Rust project using Docker (or Nixpacks)
    - Run the binary `near-pagerduty-monitor`
    - Restart on failure
 
-The `railway.json` file in the repo root configures the build and start commands.
+The repository includes:
+- `Dockerfile` - Docker-based build (recommended, more reliable)
+- `nixpacks.toml` - Nixpacks configuration (alternative)
+- `railway.json` - Railway deployment settings
 
 ### Docker
 ```dockerfile

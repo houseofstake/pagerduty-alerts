@@ -1,0 +1,8 @@
+[phases.setup]
+nixPkgs = ["rustc", "cargo"]
+
+[phases.build]
+cmds = ["cd rust && cargo build --release"]
+
+[start]
+cmd = "rust/target/release/near-pagerduty-monitor"
