@@ -74,6 +74,8 @@ Monitors the same events as the Tear Telegram bot:
 - Proposal approved for voting
 - Votes cast
 
+By default, monitors production contracts (`vote.dao`). To monitor staging, use `config.yaml` with `environment: staging` and `{ROOT_CONTRACT}` placeholder in filters.
+
 ```python
 # Python
 config = create_house_of_stake_config(routing_key)
@@ -151,6 +153,7 @@ subscriptions:
   - name: "My Alert"
     event_type: log_nep297
     severity: warning
+    environment: production  # Options: testnet, staging, production
     filter:
       And:
         - path: account_id
@@ -160,6 +163,40 @@ subscriptions:
           operator:
             Equals: "important_event"
 ```
+
+### Environment Configuration
+
+Each subscription can specify an `environment` field with three options:
+
+- **`testnet`**: Uses testnet WebSocket endpoint (`wss://ws-events-v3-testnet.intear.tech`) and testnet explorer
+- **`staging`**: Uses mainnet WebSocket, monitors staging contracts (`vote.stagingdao.near`, `venear.stagingdao.near`)
+- **`production`**: Uses mainnet WebSocket, monitors production contracts (`vote.dao`, `venear.dao`) - **default**
+
+### ROOT_CONTRACT Placeholder
+
+When using `staging` or `production` environments, you can use the `{ROOT_CONTRACT}` placeholder in filter values:
+
+- **Staging**: `{ROOT_CONTRACT}` resolves to `"stagingdao.near"`
+- **Production**: `{ROOT_CONTRACT}` resolves to `"dao"`
+- **Testnet**: No replacement (placeholder is left as-is)
+
+Example using ROOT_CONTRACT:
+```yaml
+subscriptions:
+  - name: "HoS: New Proposal"
+    event_type: log_nep297
+    environment: production  # or "staging"
+    filter:
+      And:
+        - path: account_id
+          operator:
+            Equals: "vote.{ROOT_CONTRACT}"  # Becomes "vote.dao" (production) or "vote.stagingdao.near" (staging)
+        - path: event_standard
+          operator:
+            Equals: "venear"
+```
+
+This allows you to use the same config file for both staging and production by simply changing the `environment` field.
 
 ## Available Event Types
 
@@ -227,6 +264,11 @@ Filters use the Intear Events API syntax:
 - `error` - High priority
 - `warning` - Medium priority (default)
 - `info` - Low priority
+
+### Environment Settings
+- `testnet` - Uses testnet WebSocket and explorer
+- `staging` - Uses mainnet WebSocket, monitors staging contracts (default ROOT_CONTRACT: `stagingdao.near`)
+- `production` - Uses mainnet WebSocket, monitors production contracts (default ROOT_CONTRACT: `dao`)
 
 ### Deduplication
 Use `dedup_key_template` to control alert grouping:

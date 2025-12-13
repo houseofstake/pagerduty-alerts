@@ -56,9 +56,9 @@ pub struct EventSubscription {
     /// Summary template (can include placeholders like {account_id})
     #[serde(default)]
     pub summary_template: Option<String>,
-    /// Whether to use testnet
-    #[serde(default)]
-    pub testnet: bool,
+    /// Environment: "testnet", "staging", or "production"
+    #[serde(default = "default_environment")]
+    pub environment: String,
     /// Optional dedup key template
     #[serde(default)]
     pub dedup_key_template: Option<String>,
@@ -66,6 +66,10 @@ pub struct EventSubscription {
 
 fn default_severity() -> String {
     "warning".to_string()
+}
+
+fn default_environment() -> String {
+    "production".to_string()
 }
 
 // =============================================================================
@@ -278,18 +282,21 @@ impl NearPagerDutyMonitor {
         subscription: &EventSubscription,
         pd_client: &PagerDutyClient,
     ) -> Result<(), anyhow::Error> {
-        let ws_url = Self::get_ws_url(&subscription.event_type, subscription.testnet);
+        let ws_url = Self::get_ws_url(&subscription.event_type, &subscription.environment);
         log::info!("Connecting to {} for '{}'", ws_url, subscription.name);
 
         let (mut ws_stream, _) = connect_async(&ws_url).await?;
 
+        // Resolve filter with ROOT_CONTRACT if needed
+        let resolved_filter = Self::resolve_filter(&subscription.filter, &subscription.environment);
+
         // Send filter
-        let filter_json = serde_json::to_string(&subscription.filter)?;
+        let filter_json = serde_json::to_string(&resolved_filter)?;
         ws_stream.send(Message::Text(filter_json)).await?;
         log::info!(
             "Connected and filter sent for '{}': {}",
             subscription.name,
-            subscription.filter
+            resolved_filter
         );
 
         while let Some(msg) = ws_stream.next().await {
@@ -315,13 +322,57 @@ impl NearPagerDutyMonitor {
         Ok(())
     }
 
-    fn get_ws_url(event_type: &str, testnet: bool) -> String {
-        let base = if testnet {
+    fn get_ws_url(event_type: &str, environment: &str) -> String {
+        let base = if environment == "testnet" {
             "wss://ws-events-v3-testnet.intear.tech/events"
         } else {
             "wss://ws-events-v3.intear.tech/events"
         };
         format!("{}/{}", base, event_type)
+    }
+
+    /// Resolve ROOT_CONTRACT placeholder in filter based on environment
+    fn resolve_filter(filter: &serde_json::Value, environment: &str) -> serde_json::Value {
+        let root_contract = match environment {
+            "staging" => "stagingdao.near",
+            "production" => "dao",
+            _ => return filter.clone(), // testnet or unknown - no ROOT_CONTRACT replacement
+        };
+
+        // Recursively replace {ROOT_CONTRACT} in the filter JSON
+        Self::replace_root_contract_in_value(filter, root_contract)
+    }
+
+    /// Recursively replace ROOT_CONTRACT placeholder in JSON value
+    fn replace_root_contract_in_value(
+        value: &serde_json::Value,
+        root_contract: &str,
+    ) -> serde_json::Value {
+        match value {
+            serde_json::Value::String(s) => {
+                // Replace {ROOT_CONTRACT} in strings
+                let replaced = s.replace("{ROOT_CONTRACT}", root_contract);
+                serde_json::Value::String(replaced)
+            }
+            serde_json::Value::Object(map) => {
+                let mut new_map = serde_json::Map::new();
+                for (k, v) in map {
+                    new_map.insert(
+                        k.clone(),
+                        Self::replace_root_contract_in_value(v, root_contract),
+                    );
+                }
+                serde_json::Value::Object(new_map)
+            }
+            serde_json::Value::Array(arr) => {
+                let new_arr: Vec<_> = arr
+                    .iter()
+                    .map(|v| Self::replace_root_contract_in_value(v, root_contract))
+                    .collect();
+                serde_json::Value::Array(new_arr)
+            }
+            _ => value.clone(),
+        }
     }
 
     /// Process a single event and send PagerDuty alert
@@ -344,7 +395,7 @@ impl NearPagerDutyMonitor {
         let dedup_key = Self::format_dedup_key(event, subscription);
 
         // Get explorer link
-        let explorer_link = Self::get_explorer_link(event, subscription.testnet);
+        let explorer_link = Self::get_explorer_link(event, &subscription.environment);
 
         // Create custom details
         let custom_details = serde_json::json!({
@@ -420,8 +471,8 @@ impl NearPagerDutyMonitor {
         }
     }
 
-    fn get_explorer_link(event: &serde_json::Value, testnet: bool) -> Option<(String, String)> {
-        let base = if testnet {
+    fn get_explorer_link(event: &serde_json::Value, environment: &str) -> Option<(String, String)> {
+        let base = if environment == "testnet" {
             "https://testnet.nearblocks.io"
         } else {
             "https://nearblocks.io"
@@ -467,7 +518,7 @@ pub fn house_of_stake_config(routing_key: &str) -> PagerDutyAlertConfig {
                 }),
                 severity: "warning".to_string(),
                 summary_template: Some("House of Stake: New proposal created".to_string()),
-                testnet: false,
+                environment: "production".to_string(),
                 dedup_key_template: Some("hos-proposal-{transaction_id}".to_string()),
             },
             EventSubscription {
@@ -482,7 +533,7 @@ pub fn house_of_stake_config(routing_key: &str) -> PagerDutyAlertConfig {
                 }),
                 severity: "info".to_string(),
                 summary_template: Some("House of Stake: Proposal approved for voting".to_string()),
-                testnet: false,
+                environment: "production".to_string(),
                 dedup_key_template: Some("hos-approve-{transaction_id}".to_string()),
             },
             EventSubscription {
@@ -497,7 +548,7 @@ pub fn house_of_stake_config(routing_key: &str) -> PagerDutyAlertConfig {
                 }),
                 severity: "info".to_string(),
                 summary_template: Some("House of Stake: Vote cast on proposal".to_string()),
-                testnet: false,
+                environment: "production".to_string(),
                 dedup_key_template: Some("hos-vote-{transaction_id}".to_string()),
             },
         ],
@@ -531,7 +582,7 @@ pub fn contract_events_config(
             filter: serde_json::json!({"And": filter_conditions}),
             severity: "warning".to_string(),
             summary_template: Some(format!("Event on {}: {{event_event}}", contract_id)),
-            testnet: false,
+            environment: "production".to_string(),
             dedup_key_template: Some(format!("{}-{{transaction_id}}", contract_id)),
         }],
     }
@@ -552,7 +603,7 @@ pub fn transaction_monitor_config(routing_key: &str, contract_id: &str) -> Pager
             }),
             severity: "warning".to_string(),
             summary_template: Some(format!("Transaction to {} from {{signer_id}}", contract_id)),
-            testnet: false,
+            environment: "production".to_string(),
             dedup_key_template: Some(format!("tx-{}-{{transaction_id}}", contract_id)),
         }],
     }

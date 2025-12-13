@@ -22,14 +22,14 @@ subscriptions:
   - name: "HoS: New Proposal Created"
     event_type: log_nep297
     severity: warning
-    testnet: false
+    environment: production # Options: testnet, staging, production
     summary_template: "House of Stake: New proposal created"
     dedup_key_template: "hos-proposal-{transaction_id}"
     filter:
       And:
         - path: account_id
           operator:
-            Equals: "vote.dao"
+            Equals: "vote.{ROOT_CONTRACT}" # Will be replaced: vote.dao (production) or vote.stagingdao.near (staging)
         - path: event_standard
           operator:
             Equals: "venear"
@@ -40,14 +40,14 @@ subscriptions:
   - name: "HoS: Proposal Approved for Voting"
     event_type: log_nep297
     severity: info
-    testnet: false
+    environment: production # Options: testnet, staging, production
     summary_template: "House of Stake: Proposal approved and open for voting"
     dedup_key_template: "hos-approve-{transaction_id}"
     filter:
       And:
         - path: account_id
           operator:
-            Equals: "vote.dao"
+            Equals: "vote.{ROOT_CONTRACT}" # Will be replaced: vote.dao (production) or vote.stagingdao.near (staging)
         - path: event_standard
           operator:
             Equals: "venear"
@@ -58,14 +58,14 @@ subscriptions:
   - name: "HoS: Vote Cast"
     event_type: log_nep297
     severity: info
-    testnet: false
+    environment: production # Options: testnet, staging, production
     summary_template: "House of Stake: Vote cast on proposal"
     dedup_key_template: "hos-vote-{transaction_id}"
     filter:
       And:
         - path: account_id
           operator:
-            Equals: "vote.dao"
+            Equals: "vote.{ROOT_CONTRACT}" # Will be replaced: vote.dao (production) or vote.stagingdao.near (staging)
         - path: event_standard
           operator:
             Equals: "venear"
@@ -188,6 +188,20 @@ subscriptions:
 #   - Use dots for nested: "data.user.name"
 #   - Use brackets for arrays: "tokens[0]"
 #   - Use "." for root when using And/Or
+
+# =============================================================================
+# Environment Settings
+# =============================================================================
+#
+# - testnet    : Uses testnet WebSocket and explorer
+# - staging    : Uses mainnet WebSocket, monitors vote.stagingdao.near and venear.stagingdao.near
+# - production : Uses mainnet WebSocket, monitors vote.dao and venear.dao (default)
+#
+# When using staging or production, you can use {ROOT_CONTRACT} in filter values:
+#   - staging: {ROOT_CONTRACT} = "stagingdao.near"
+#   - production: {ROOT_CONTRACT} = "dao"
+#
+# Example: "vote.{ROOT_CONTRACT}" becomes "vote.dao" (production) or "vote.stagingdao.near" (staging)
 
 # =============================================================================
 # Severity Levels (PagerDuty)
