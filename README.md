@@ -312,4 +312,4 @@ MIT
 
 - [Intear Events API](https://docs.intear.tech/docs/events-api/) - Blockchain event streaming
 - [Tear Bot](https://github.com/INTEARnear/Tear) - Original Telegram bot architecture
-- [PagerDuty Events API v2](https://developer.pagerduty.com/docs/events-api-v2/trigger-events/) - Alert delivery
+- [PagerDuty Events API v2](https://developer.pagerduty.com/docs/events-api-v2-overview) - Alert delivery
