@@ -220,6 +220,33 @@ All alerts include:
 
 ## Deployment Options
 
+### Railway
+
+Railway can automatically detect and deploy your Rust application:
+
+1. **Install Railway CLI** (optional, for local deployment):
+   ```bash
+   npm i -g @railway/cli
+   ```
+
+2. **Deploy via Railway Dashboard**:
+   - Go to [railway.app](https://railway.app) and create a new project
+   - Connect your GitHub repository (or deploy from CLI)
+   - Railway will auto-detect the Rust project in the `rust/` directory
+
+3. **Set Environment Variables**:
+   In Railway dashboard → Variables, add:
+   - `PAGERDUTY_ROUTING_KEY` - Your PagerDuty integration key (required)
+   - `RUST_LOG` - Logging level (optional, default: `info`)
+
+4. **Deploy**:
+   Railway will automatically:
+   - Build the Rust project with `cargo build --release`
+   - Run the binary `near-pagerduty-monitor`
+   - Restart on failure
+
+The `railway.json` file in the repo root configures the build and start commands.
+
 ### Docker
 ```dockerfile
 FROM python:3.11-slim

@@ -1,0 +1,19 @@
+# Railway ignore file
+# Exclude unnecessary files from deployment
+
+# Python files (we're deploying Rust)
+python/
+
+# Development files
+*.md
+LICENSE
+config.example.yaml
+
+# Rust build artifacts (will be rebuilt)
+rust/target/
+rust/Cargo.lock
+
+# Git
+.git/
+.gitignore
+
