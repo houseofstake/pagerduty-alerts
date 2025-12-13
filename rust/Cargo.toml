@@ -17,14 +17,7 @@ chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
 log = "0.4"
 env_logger = "0.10"
-
-# Optional: for configuration file support
-toml = { version = "0.8", optional = true }
-config = { version = "0.14", optional = true }
-
-[features]
-default = []
-config-file = ["toml", "config"]
+serde_yaml = "0.9"
 
 [[bin]]
 name = "near-pagerduty-monitor"

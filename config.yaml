@@ -21,7 +21,7 @@ subscriptions:
 
   - name: "HoS: New Proposal Created"
     event_type: log_nep297
-    severity: warning
+    severity: info
     testnet: false
     summary_template: "House of Stake: New proposal created"
     dedup_key_template: "hos-proposal-{transaction_id}"

@@ -118,8 +118,33 @@ let config = transaction_monitor_config(&routing_key, "your-contract.near");
 
 For more complex setups, use the YAML config file (see `config.example.yaml`):
 
+1. **Copy the example config:**
+   ```bash
+   cp config.example.yaml config.yaml
+   ```
+
+2. **Edit `config.yaml`** with your settings. You can either:
+   - Include `pagerduty_routing_key` in the file, OR
+   - Omit it and use the `PAGERDUTY_ROUTING_KEY` environment variable (recommended for security)
+
+3. **Run the application:**
+   ```bash
+   # Rust - will automatically load config.yaml if present
+   cd rust && cargo run --release
+   
+   # Or place config.yaml in the rust/ directory
+   ```
+
+The application will:
+- First look for `config.yaml` in the current directory
+- Then look for `rust/config.yaml` 
+- If neither exists, fall back to using `PAGERDUTY_ROUTING_KEY` environment variable with hardcoded House of Stake configuration
+
+**Security Note**: You can commit `config.yaml` to your repository without exposing your PagerDuty routing key. Simply omit the `pagerduty_routing_key` field from the YAML file, and the application will automatically use the `PAGERDUTY_ROUTING_KEY` environment variable instead. This is the recommended approach for production deployments.
+
+Example `config.yaml` (routing key omitted - will use env var):
 ```yaml
-pagerduty_routing_key: "YOUR_KEY"
+# pagerduty_routing_key: "YOUR_KEY"  # Omit this line to use PAGERDUTY_ROUTING_KEY env var
 reconnect_delay_secs: 5
 
 subscriptions:
@@ -236,8 +261,13 @@ Railway can deploy your Rust application using Docker or Nixpacks:
 
 3. **Set Environment Variables**:
    In Railway dashboard → Variables, add:
-   - `PAGERDUTY_ROUTING_KEY` - Your PagerDuty integration key (required)
+   - `PAGERDUTY_ROUTING_KEY` - Your PagerDuty integration key (required if no config.yaml)
    - `RUST_LOG` - Logging level (optional, default: `info`)
+
+   **OR** use a config file:
+   - Add `config.yaml` to your repository root (copy from `config.example.yaml`)
+   - The Dockerfile will automatically include it in the deployment
+   - If `config.yaml` exists, it takes precedence over environment variables
 
 4. **Deploy**:
    Railway will automatically:

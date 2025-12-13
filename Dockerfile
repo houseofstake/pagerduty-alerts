@@ -24,6 +24,9 @@ WORKDIR /app
 # Copy the binary from builder
 COPY --from=builder /app/rust/target/release/near-pagerduty-monitor /app/near-pagerduty-monitor
 
+# Copy config.yaml if it exists (optional - can also use environment variables)
+COPY config.yaml* /app/
+
 # Run the binary
 CMD ["./near-pagerduty-monitor"]
 

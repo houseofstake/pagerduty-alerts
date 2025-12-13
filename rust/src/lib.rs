@@ -23,7 +23,8 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 /// Configuration for the PagerDuty alerting system
 #[derive(Debug, Clone, Deserialize)]
 pub struct PagerDutyAlertConfig {
-    /// PagerDuty integration/routing key
+    /// PagerDuty integration/routing key (can be omitted from YAML to use env var)
+    #[serde(rename = "pagerduty_routing_key", default = "default_routing_key")]
     pub routing_key: String,
     /// List of event subscriptions to monitor
     pub subscriptions: Vec<EventSubscription>,
@@ -34,6 +35,10 @@ pub struct PagerDutyAlertConfig {
 
 fn default_reconnect_delay() -> u64 {
     5
+}
+
+fn default_routing_key() -> String {
+    String::new()
 }
 
 /// A single event subscription that triggers PagerDuty alerts
