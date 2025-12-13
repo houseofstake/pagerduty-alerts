@@ -9,13 +9,11 @@
 //! The system connects to Intear's WebSocket Events API (same as Tear bot) and
 //! triggers PagerDuty alerts when matching events are detected.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
-use async_trait::async_trait;
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 // =============================================================================
@@ -230,14 +228,8 @@ impl NearPagerDutyMonitor {
 
             let handle = tokio::spawn(async move {
                 loop {
-                    if let Err(e) =
-                        Self::monitor_stream(&subscription, &pd_client).await
-                    {
-                        log::error!(
-                            "Error in subscription '{}': {:?}",
-                            subscription.name,
-                            e
-                        );
+                    if let Err(e) = Self::monitor_stream(&subscription, &pd_client).await {
+                        log::error!("Error in subscription '{}': {:?}", subscription.name, e);
                     }
                     log::info!(
                         "Reconnecting to '{}' in {}s...",
@@ -321,11 +313,7 @@ impl NearPagerDutyMonitor {
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
 
-        log::info!(
-            "Event received for '{}': {}",
-            subscription.name,
-            account_id
-        );
+        log::info!("Event received for '{}': {}", subscription.name, account_id);
 
         // Format summary
         let summary = Self::format_summary(event, subscription);
@@ -350,7 +338,9 @@ impl NearPagerDutyMonitor {
                 &subscription.severity,
                 dedup_key,
                 Some(custom_details),
-                explorer_link.as_ref().map(|(h, t)| (h.as_str(), t.as_str())),
+                explorer_link
+                    .as_ref()
+                    .map(|(h, t)| (h.as_str(), t.as_str())),
             )
             .await?;
 
@@ -416,7 +406,10 @@ impl NearPagerDutyMonitor {
         };
 
         if let Some(tx_id) = event.get("transaction_id").and_then(|v| v.as_str()) {
-            return Some((format!("{}/txns/{}", base, tx_id), "View Transaction".to_string()));
+            return Some((
+                format!("{}/txns/{}", base, tx_id),
+                "View Transaction".to_string(),
+            ));
         }
 
         if let Some(account_id) = event.get("account_id").and_then(|v| v.as_str()) {
@@ -515,10 +508,7 @@ pub fn contract_events_config(
             event_type: "log_nep297".to_string(),
             filter: serde_json::json!({"And": filter_conditions}),
             severity: "warning".to_string(),
-            summary_template: Some(format!(
-                "Event on {}: {{event_event}}",
-                contract_id
-            )),
+            summary_template: Some(format!("Event on {}: {{event_event}}", contract_id)),
             testnet: false,
             dedup_key_template: Some(format!("{}-{{transaction_id}}", contract_id)),
         }],
@@ -539,10 +529,7 @@ pub fn transaction_monitor_config(routing_key: &str, contract_id: &str) -> Pager
                 ]
             }),
             severity: "warning".to_string(),
-            summary_template: Some(format!(
-                "Transaction to {} from {{signer_id}}",
-                contract_id
-            )),
+            summary_template: Some(format!("Transaction to {} from {{signer_id}}", contract_id)),
             testnet: false,
             dedup_key_template: Some(format!("tx-{}-{{transaction_id}}", contract_id)),
         }],
