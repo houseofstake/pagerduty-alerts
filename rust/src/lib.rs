@@ -103,7 +103,7 @@ struct PagerDutyLink {
 }
 
 #[derive(Debug, Deserialize)]
-struct PagerDutyResponse {
+pub struct PagerDutyResponse {
     status: String,
     message: String,
     dedup_key: Option<String>,
@@ -160,7 +160,12 @@ impl PagerDutyClient {
             .await?;
 
         let result: PagerDutyResponse = response.json().await?;
-        log::info!("PagerDuty response: {:?}", result);
+        log::info!(
+            "PagerDuty alert triggered: status={}, message={}, dedup_key={:?}",
+            result.status,
+            result.message,
+            result.dedup_key
+        );
         Ok(result)
     }
 
@@ -179,7 +184,13 @@ impl PagerDutyClient {
             .send()
             .await?;
 
-        Ok(response.json().await?)
+        let result: PagerDutyResponse = response.json().await?;
+        log::info!(
+            "PagerDuty alert acknowledged: status={}, message={}",
+            result.status,
+            result.message
+        );
+        Ok(result)
     }
 
     /// Resolve an existing alert
@@ -197,7 +208,13 @@ impl PagerDutyClient {
             .send()
             .await?;
 
-        Ok(response.json().await?)
+        let result: PagerDutyResponse = response.json().await?;
+        log::info!(
+            "PagerDuty alert resolved: status={}, message={}",
+            result.status,
+            result.message
+        );
+        Ok(result)
     }
 }
 
@@ -534,37 +551,6 @@ pub fn transaction_monitor_config(routing_key: &str, contract_id: &str) -> Pager
             dedup_key_template: Some(format!("tx-{}-{{transaction_id}}", contract_id)),
         }],
     }
-}
-
-// =============================================================================
-// Main Entry Point Example
-// =============================================================================
-
-#[tokio::main]
-async fn main() -> Result<(), anyhow::Error> {
-    env_logger::init();
-
-    let routing_key = std::env::var("PAGERDUTY_ROUTING_KEY")
-        .expect("PAGERDUTY_ROUTING_KEY environment variable required");
-
-    // Choose your configuration:
-    let config = house_of_stake_config(&routing_key);
-
-    // Or monitor a custom contract:
-    // let config = contract_events_config(&routing_key, "your-contract.near", Some("nep141"));
-
-    // Or monitor transactions:
-    // let config = transaction_monitor_config(&routing_key, "your-contract.near");
-
-    log::info!(
-        "Starting NEAR event monitor with {} subscription(s)",
-        config.subscriptions.len()
-    );
-
-    let monitor = NearPagerDutyMonitor::new(config);
-    monitor.start().await?;
-
-    Ok(())
 }
 
 #[cfg(test)]

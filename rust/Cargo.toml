@@ -28,7 +28,7 @@ config-file = ["toml", "config"]
 
 [[bin]]
 name = "near-pagerduty-monitor"
-path = "src/lib.rs"
+path = "src/main.rs"
 
 [dev-dependencies]
 tokio-test = "0.4"
