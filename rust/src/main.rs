@@ -1,10 +1,10 @@
 //! Main entry point for the NEAR PagerDuty Monitor binary
 
-use near_pagerduty_alerts::house_of_stake_config;
+use near_pagerduty_alerts::venear_pause_config;
 use near_pagerduty_alerts::PagerDutyAlertConfig;
 use std::path::Path;
 // Uncomment as needed:
-// use near_pagerduty_alerts::{contract_events_config, transaction_monitor_config};
+// use near_pagerduty_alerts::method_call_config;
 
 fn load_config_from_file(path: &str) -> Result<PagerDutyAlertConfig, anyhow::Error> {
     let content = std::fs::read_to_string(path)?;
@@ -34,25 +34,34 @@ async fn main() -> Result<(), anyhow::Error> {
         log::info!("Loading configuration from rust/config.yaml");
         load_config_from_file("rust/config.yaml")?
     } else {
-        log::info!("No config.yaml found, using hardcoded House of Stake configuration");
+        log::info!("No config.yaml found, using hardcoded veNEAR pause monitor configuration");
         let routing_key = std::env::var("PAGERDUTY_ROUTING_KEY").expect(
             "PAGERDUTY_ROUTING_KEY environment variable required when no config.yaml is present",
         );
 
-        // Choose your configuration:
-        house_of_stake_config(&routing_key)
+        let venear_contract = std::env::var("VENEAR_CONTRACT")
+            .unwrap_or_else(|_| "venear.near".to_string());
 
-        // Or monitor a custom contract:
-        // contract_events_config(&routing_key, "your-contract.near", Some("nep141"))
+        // Monitor veNEAR pause calls
+        venear_pause_config(&routing_key, &venear_contract)
 
-        // Or monitor transactions:
-        // transaction_monitor_config(&routing_key, "your-contract.near")
+        // Or monitor any contract method:
+        // method_call_config(&routing_key, "your-contract.near", Some("your_method"))
     };
 
     log::info!(
-        "Starting NEAR event monitor with {} subscription(s)",
+        "Starting NEAR action monitor with {} subscription(s)",
         config.subscriptions.len()
     );
+
+    for sub in &config.subscriptions {
+        log::info!(
+            "  - {}: account={}, method={:?}",
+            sub.name,
+            sub.account_id,
+            sub.method_name
+        );
+    }
 
     let monitor = near_pagerduty_alerts::NearPagerDutyMonitor::new(config);
     monitor.start().await?;

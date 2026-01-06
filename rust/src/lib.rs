@@ -1,15 +1,14 @@
-//! NEAR Blockchain Event to PagerDuty Alert Bridge
+//! NEAR Blockchain Action Monitor to PagerDuty Alert Bridge
 //!
-//! This module provides a PagerDuty alerting system that mirrors the architecture
-//! of the Tear bot's House of Stake module, but sends alerts to PagerDuty instead
-//! of Telegram.
+//! This module monitors NEAR blockchain actions via the neardata WebSocket stream
+//! and triggers PagerDuty alerts when matching events are detected.
 //!
 //! # Architecture
 //!
-//! The system connects to Intear's WebSocket Events API (same as Tear bot) and
-//! triggers PagerDuty alerts when matching events are detected.
+//! The system connects to neardata's WebSocket API (wss://actions.near.stream/ws)
+//! and filters for specific contract calls, optionally filtering by method name.
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
@@ -46,19 +45,17 @@ fn default_routing_key() -> String {
 pub struct EventSubscription {
     /// Human-readable name for this subscription
     pub name: String,
-    /// Intear event type (e.g., "log_nep297", "ft_transfer", "tx_transaction")
-    pub event_type: String,
-    /// Intear filter object (JSON)
-    pub filter: serde_json::Value,
+    /// The contract account ID to monitor
+    pub account_id: String,
+    /// Optional method name filter - if set, only alerts for this method
+    #[serde(default)]
+    pub method_name: Option<String>,
     /// PagerDuty severity: critical, error, warning, info
     #[serde(default = "default_severity")]
     pub severity: String,
-    /// Summary template (can include placeholders like {account_id})
+    /// Summary template (can include placeholders like {account_id}, {method_name}, {predecessor_id})
     #[serde(default)]
     pub summary_template: Option<String>,
-    /// Environment: "testnet", "staging", or "production"
-    #[serde(default = "default_environment")]
-    pub environment: String,
     /// Optional dedup key template
     #[serde(default)]
     pub dedup_key_template: Option<String>,
@@ -68,8 +65,104 @@ fn default_severity() -> String {
     "warning".to_string()
 }
 
-fn default_environment() -> String {
-    "production".to_string()
+// =============================================================================
+// Neardata Types
+// =============================================================================
+
+/// Message received from neardata WebSocket
+#[derive(Debug, Deserialize)]
+struct NeardataMessage {
+    #[allow(dead_code)]
+    secret: String,
+    actions: Vec<NeardataAction>,
+    #[allow(dead_code)]
+    note: Option<String>,
+}
+
+/// A single action from neardata
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NeardataAction {
+    pub block_height: u64,
+    #[serde(default)]
+    pub block_hash: Option<String>,
+    #[serde(default)]
+    pub block_timestamp_ms: Option<f64>,
+    #[serde(default)]
+    pub tx_hash: Option<String>,
+    #[serde(default)]
+    pub receipt_id: Option<String>,
+    #[serde(default)]
+    pub signer_id: Option<String>,
+    pub account_id: String,
+    #[serde(default)]
+    pub predecessor_id: Option<String>,
+    pub status: String,
+    pub action: ActionType,
+}
+
+/// The type of action
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub enum ActionType {
+    FunctionCall(FunctionCallAction),
+    Transfer(TransferAction),
+    DeployContract(DeployContractAction),
+    AddKey(AddKeyAction),
+    DeleteKey(DeleteKeyAction),
+    CreateAccount(CreateAccountAction),
+    DeleteAccount(DeleteAccountAction),
+    Stake(StakeAction),
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct FunctionCallAction {
+    pub method_name: String,
+    #[serde(default)]
+    pub args: Option<String>,
+    #[serde(default)]
+    pub deposit: Option<String>,
+    #[serde(default)]
+    pub gas: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TransferAction {
+    pub deposit: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DeployContractAction {
+    #[serde(default)]
+    pub code: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AddKeyAction {
+    pub public_key: String,
+    #[serde(default)]
+    pub access_key: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DeleteKeyAction {
+    pub public_key: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CreateAccountAction {}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DeleteAccountAction {
+    #[serde(default)]
+    pub beneficiary_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StakeAction {
+    pub stake: String,
+    pub public_key: String,
 }
 
 // =============================================================================
@@ -113,9 +206,9 @@ struct PagerDutyLink {
 
 #[derive(Debug, Deserialize)]
 pub struct PagerDutyResponse {
-    status: String,
-    message: String,
-    dedup_key: Option<String>,
+    pub status: String,
+    pub message: String,
+    pub dedup_key: Option<String>,
 }
 
 impl PagerDutyClient {
@@ -158,7 +251,7 @@ impl PagerDutyClient {
             },
             links,
             client: "NEAR Blockchain Monitor".to_string(),
-            client_url: "https://explorer.near.org".to_string(),
+            client_url: "https://nearblocks.io".to_string(),
         };
 
         let response = self
@@ -238,81 +331,94 @@ pub struct NearPagerDutyMonitor {
 }
 
 impl NearPagerDutyMonitor {
+    const NEARDATA_WS_URL: &'static str = "wss://actions.near.stream/ws";
+
     pub fn new(config: PagerDutyAlertConfig) -> Self {
         let pd_client = Arc::new(PagerDutyClient::new(config.routing_key.clone()));
         Self { config, pd_client }
     }
 
-    /// Start monitoring all configured event streams
+    /// Start monitoring - connects to neardata and processes actions
     pub async fn start(&self) -> Result<(), anyhow::Error> {
-        let mut handles = Vec::new();
-
-        for subscription in &self.config.subscriptions {
-            let pd_client = Arc::clone(&self.pd_client);
-            let subscription = subscription.clone();
-            let reconnect_delay = self.config.reconnect_delay_secs;
-
-            let handle = tokio::spawn(async move {
-                loop {
-                    if let Err(e) = Self::monitor_stream(&subscription, &pd_client).await {
-                        log::error!("Error in subscription '{}': {:?}", subscription.name, e);
-                    }
-                    log::info!(
-                        "Reconnecting to '{}' in {}s...",
-                        subscription.name,
-                        reconnect_delay
-                    );
-                    tokio::time::sleep(Duration::from_secs(reconnect_delay)).await;
-                }
-            });
-
-            handles.push(handle);
+        loop {
+            if let Err(e) = self.monitor_stream().await {
+                log::error!("Error in neardata stream: {:?}", e);
+            }
+            log::info!(
+                "Reconnecting to neardata in {}s...",
+                self.config.reconnect_delay_secs
+            );
+            tokio::time::sleep(Duration::from_secs(self.config.reconnect_delay_secs)).await;
         }
-
-        // Wait for all handles (they run forever unless errored)
-        for handle in handles {
-            let _ = handle.await;
-        }
-
-        Ok(())
     }
 
-    /// Monitor a single event stream
-    async fn monitor_stream(
-        subscription: &EventSubscription,
-        pd_client: &PagerDutyClient,
-    ) -> Result<(), anyhow::Error> {
-        let ws_url = Self::get_ws_url(&subscription.event_type, &subscription.environment);
-        log::info!("Connecting to {} for '{}'", ws_url, subscription.name);
+    /// Monitor the neardata WebSocket stream
+    async fn monitor_stream(&self) -> Result<(), anyhow::Error> {
+        log::info!("Connecting to {}", Self::NEARDATA_WS_URL);
 
-        let (mut ws_stream, _) = connect_async(&ws_url).await?;
+        let (mut ws_stream, _) = connect_async(Self::NEARDATA_WS_URL).await?;
 
-        // Resolve filter with ROOT_CONTRACT if needed
-        let resolved_filter = Self::resolve_filter(&subscription.filter, &subscription.environment);
+        // Build filter for all monitored accounts
+        let account_ids: Vec<&str> = self
+            .config
+            .subscriptions
+            .iter()
+            .map(|s| s.account_id.as_str())
+            .collect();
 
-        // Send filter
-        let filter_json = serde_json::to_string(&resolved_filter)?;
-        ws_stream.send(Message::Text(filter_json)).await?;
-        log::info!(
-            "Connected and filter sent for '{}': {}",
-            subscription.name,
-            resolved_filter
-        );
+        // Build subscription lookup by account_id for fast matching
+        let subscriptions_by_account: HashMap<&str, Vec<&EventSubscription>> = {
+            let mut map: HashMap<&str, Vec<&EventSubscription>> = HashMap::new();
+            for sub in &self.config.subscriptions {
+                map.entry(sub.account_id.as_str())
+                    .or_default()
+                    .push(sub);
+            }
+            map
+        };
+
+        // Neardata filter format
+        let filter = serde_json::json!({
+            "secret": "tmp",
+            "filter": account_ids.iter().map(|id| {
+                serde_json::json!({"accountId": id, "status": "SUCCESS"})
+            }).collect::<Vec<_>>(),
+            "fetch_past_actions": 0
+        });
+
+        let filter_json = serde_json::to_string(&filter)?;
+        ws_stream.send(Message::Text(filter_json.clone())).await?;
+        log::info!("Connected and filter sent: {}", filter_json);
 
         while let Some(msg) = ws_stream.next().await {
             match msg? {
                 Message::Text(text) => {
-                    // Events come as an array (grouped by block)
-                    let events: Vec<serde_json::Value> = serde_json::from_str(&text)?;
-                    for event in events {
-                        Self::process_event(&event, subscription, pd_client).await?;
+                    match serde_json::from_str::<NeardataMessage>(&text) {
+                        Ok(neardata_msg) => {
+                            for action in neardata_msg.actions {
+                                // Find matching subscriptions for this account
+                                if let Some(subs) = subscriptions_by_account.get(action.account_id.as_str()) {
+                                    for sub in subs {
+                                        if Self::action_matches_subscription(&action, sub) {
+                                            if let Err(e) = self.process_action(&action, sub).await {
+                                                log::error!("Error processing action: {:?}", e);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to parse neardata message: {:?}", e);
+                            log::debug!("Raw message: {}", text);
+                        }
                     }
                 }
                 Message::Ping(data) => {
                     ws_stream.send(Message::Pong(data)).await?;
                 }
                 Message::Close(_) => {
-                    log::warn!("WebSocket closed for '{}'", subscription.name);
+                    log::warn!("WebSocket closed");
                     break;
                 }
                 _ => {}
@@ -322,92 +428,67 @@ impl NearPagerDutyMonitor {
         Ok(())
     }
 
-    fn get_ws_url(event_type: &str, environment: &str) -> String {
-        let base = if environment == "testnet" {
-            "wss://ws-events-v3-testnet.intear.tech/events"
-        } else {
-            "wss://ws-events-v3.intear.tech/events"
-        };
-        format!("{}/{}", base, event_type)
-    }
-
-    /// Resolve ROOT_CONTRACT placeholder in filter based on environment
-    fn resolve_filter(filter: &serde_json::Value, environment: &str) -> serde_json::Value {
-        let root_contract = match environment {
-            "staging" => "stagingdao.near",
-            "production" => "dao",
-            _ => return filter.clone(), // testnet or unknown - no ROOT_CONTRACT replacement
-        };
-
-        // Recursively replace {ROOT_CONTRACT} in the filter JSON
-        Self::replace_root_contract_in_value(filter, root_contract)
-    }
-
-    /// Recursively replace ROOT_CONTRACT placeholder in JSON value
-    fn replace_root_contract_in_value(
-        value: &serde_json::Value,
-        root_contract: &str,
-    ) -> serde_json::Value {
-        match value {
-            serde_json::Value::String(s) => {
-                // Replace {ROOT_CONTRACT} in strings
-                let replaced = s.replace("{ROOT_CONTRACT}", root_contract);
-                serde_json::Value::String(replaced)
-            }
-            serde_json::Value::Object(map) => {
-                let mut new_map = serde_json::Map::new();
-                for (k, v) in map {
-                    new_map.insert(
-                        k.clone(),
-                        Self::replace_root_contract_in_value(v, root_contract),
-                    );
+    /// Check if an action matches a subscription's filters
+    fn action_matches_subscription(action: &NeardataAction, subscription: &EventSubscription) -> bool {
+        // If method_name filter is set, only match FunctionCall with that method
+        if let Some(ref required_method) = subscription.method_name {
+            match &action.action {
+                ActionType::FunctionCall(fc) => {
+                    if fc.method_name != *required_method {
+                        return false;
+                    }
                 }
-                serde_json::Value::Object(new_map)
+                _ => return false, // Not a function call, doesn't match
             }
-            serde_json::Value::Array(arr) => {
-                let new_arr: Vec<_> = arr
-                    .iter()
-                    .map(|v| Self::replace_root_contract_in_value(v, root_contract))
-                    .collect();
-                serde_json::Value::Array(new_arr)
-            }
-            _ => value.clone(),
         }
+        true
     }
 
-    /// Process a single event and send PagerDuty alert
-    async fn process_event(
-        event: &serde_json::Value,
+    /// Process an action and send PagerDuty alert
+    async fn process_action(
+        &self,
+        action: &NeardataAction,
         subscription: &EventSubscription,
-        pd_client: &PagerDutyClient,
     ) -> Result<(), anyhow::Error> {
-        let account_id = event
-            .get("account_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
+        let method_name = match &action.action {
+            ActionType::FunctionCall(fc) => Some(fc.method_name.as_str()),
+            _ => None,
+        };
 
-        log::info!("Event received for '{}': {}", subscription.name, account_id);
+        log::info!(
+            "Action matched for '{}': account={}, method={:?}, from={:?}",
+            subscription.name,
+            action.account_id,
+            method_name,
+            action.predecessor_id
+        );
 
         // Format summary
-        let summary = Self::format_summary(event, subscription);
+        let summary = self.format_summary(action, subscription);
 
         // Generate dedup key
-        let dedup_key = Self::format_dedup_key(event, subscription);
+        let dedup_key = self.format_dedup_key(action, subscription);
 
         // Get explorer link
-        let explorer_link = Self::get_explorer_link(event, &subscription.environment);
+        let explorer_link = Self::get_explorer_link(action);
 
         // Create custom details
         let custom_details = serde_json::json!({
             "subscription_name": subscription.name,
-            "event_type": subscription.event_type,
-            "raw_event": event,
+            "account_id": action.account_id,
+            "method_name": method_name,
+            "predecessor_id": action.predecessor_id,
+            "signer_id": action.signer_id,
+            "block_height": action.block_height,
+            "tx_hash": action.tx_hash,
+            "receipt_id": action.receipt_id,
+            "action": action.action,
         });
 
-        pd_client
+        self.pd_client
             .trigger(
                 &summary,
-                &format!("near:{}", account_id),
+                &format!("near:{}", action.account_id),
                 &subscription.severity,
                 dedup_key,
                 Some(custom_details),
@@ -420,79 +501,74 @@ impl NearPagerDutyMonitor {
         Ok(())
     }
 
-    fn format_summary(event: &serde_json::Value, subscription: &EventSubscription) -> String {
+    fn format_summary(&self, action: &NeardataAction, subscription: &EventSubscription) -> String {
         if let Some(template) = &subscription.summary_template {
-            // Simple template replacement
-            let mut result = template.clone();
-            if let Some(obj) = event.as_object() {
-                for (key, value) in obj {
-                    let placeholder = format!("{{{}}}", key);
-                    let value_str = match value {
-                        serde_json::Value::String(s) => s.clone(),
-                        _ => value.to_string(),
-                    };
-                    result = result.replace(&placeholder, &value_str);
-                }
-            }
-            result
+            let method_name = match &action.action {
+                ActionType::FunctionCall(fc) => fc.method_name.clone(),
+                _ => "unknown".to_string(),
+            };
+
+            template
+                .replace("{account_id}", &action.account_id)
+                .replace("{method_name}", &method_name)
+                .replace("{predecessor_id}", action.predecessor_id.as_deref().unwrap_or("unknown"))
+                .replace("{signer_id}", action.signer_id.as_deref().unwrap_or("unknown"))
+                .replace("{block_height}", &action.block_height.to_string())
+                .replace("{tx_hash}", action.tx_hash.as_deref().unwrap_or("unknown"))
         } else {
-            let account_id = event
-                .get("account_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-            format!("{}: Event from {}", subscription.name, account_id)
+            let method_name = match &action.action {
+                ActionType::FunctionCall(fc) => format!(" calling {}", fc.method_name),
+                _ => String::new(),
+            };
+            format!(
+                "{}: Action on {}{}",
+                subscription.name, action.account_id, method_name
+            )
         }
     }
 
     fn format_dedup_key(
-        event: &serde_json::Value,
+        &self,
+        action: &NeardataAction,
         subscription: &EventSubscription,
     ) -> Option<String> {
         if let Some(template) = &subscription.dedup_key_template {
-            let mut result = template.clone();
-            if let Some(obj) = event.as_object() {
-                for (key, value) in obj {
-                    let placeholder = format!("{{{}}}", key);
-                    let value_str = match value {
-                        serde_json::Value::String(s) => s.clone(),
-                        _ => value.to_string(),
-                    };
-                    result = result.replace(&placeholder, &value_str);
-                }
-            }
-            Some(result)
+            let method_name = match &action.action {
+                ActionType::FunctionCall(fc) => fc.method_name.clone(),
+                _ => "unknown".to_string(),
+            };
+
+            Some(
+                template
+                    .replace("{account_id}", &action.account_id)
+                    .replace("{method_name}", &method_name)
+                    .replace("{predecessor_id}", action.predecessor_id.as_deref().unwrap_or("unknown"))
+                    .replace("{signer_id}", action.signer_id.as_deref().unwrap_or("unknown"))
+                    .replace("{block_height}", &action.block_height.to_string())
+                    .replace("{tx_hash}", action.tx_hash.as_deref().unwrap_or("unknown"))
+                    .replace("{receipt_id}", action.receipt_id.as_deref().unwrap_or("unknown")),
+            )
         } else {
-            // Default to transaction_id or receipt_id
-            event
-                .get("transaction_id")
-                .or_else(|| event.get("receipt_id"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
+            // Default to tx_hash or receipt_id
+            action
+                .tx_hash
+                .clone()
+                .or_else(|| action.receipt_id.clone())
         }
     }
 
-    fn get_explorer_link(event: &serde_json::Value, environment: &str) -> Option<(String, String)> {
-        let base = if environment == "testnet" {
-            "https://testnet.nearblocks.io"
-        } else {
-            "https://nearblocks.io"
-        };
-
-        if let Some(tx_id) = event.get("transaction_id").and_then(|v| v.as_str()) {
+    fn get_explorer_link(action: &NeardataAction) -> Option<(String, String)> {
+        if let Some(ref tx_hash) = action.tx_hash {
             return Some((
-                format!("{}/txns/{}", base, tx_id),
+                format!("https://nearblocks.io/txns/{}", tx_hash),
                 "View Transaction".to_string(),
             ));
         }
 
-        if let Some(account_id) = event.get("account_id").and_then(|v| v.as_str()) {
-            return Some((
-                format!("{}/address/{}", base, account_id),
-                "View Contract".to_string(),
-            ));
-        }
-
-        None
+        Some((
+            format!("https://nearblocks.io/address/{}", action.account_id),
+            "View Contract".to_string(),
+        ))
     }
 }
 
@@ -500,111 +576,47 @@ impl NearPagerDutyMonitor {
 // Example Configurations
 // =============================================================================
 
-/// Create House of Stake monitoring config (mirrors the Telegram bot)
-pub fn house_of_stake_config(routing_key: &str) -> PagerDutyAlertConfig {
-    PagerDutyAlertConfig {
-        routing_key: routing_key.to_string(),
-        reconnect_delay_secs: 5,
-        subscriptions: vec![
-            EventSubscription {
-                name: "HoS: New Proposal".to_string(),
-                event_type: "log_nep297".to_string(),
-                filter: serde_json::json!({
-                    "And": [
-                        {"path": "account_id", "operator": {"Equals": "vote.dao"}},
-                        {"path": "event_standard", "operator": {"Equals": "venear"}},
-                        {"path": "event_event", "operator": {"Equals": "create_proposal"}},
-                    ]
-                }),
-                severity: "warning".to_string(),
-                summary_template: Some("House of Stake: New proposal created".to_string()),
-                environment: "production".to_string(),
-                dedup_key_template: Some("hos-proposal-{transaction_id}".to_string()),
-            },
-            EventSubscription {
-                name: "HoS: Proposal Approved".to_string(),
-                event_type: "log_nep297".to_string(),
-                filter: serde_json::json!({
-                    "And": [
-                        {"path": "account_id", "operator": {"Equals": "vote.dao"}},
-                        {"path": "event_standard", "operator": {"Equals": "venear"}},
-                        {"path": "event_event", "operator": {"Equals": "proposal_approve"}},
-                    ]
-                }),
-                severity: "info".to_string(),
-                summary_template: Some("House of Stake: Proposal approved for voting".to_string()),
-                environment: "production".to_string(),
-                dedup_key_template: Some("hos-approve-{transaction_id}".to_string()),
-            },
-            EventSubscription {
-                name: "HoS: Vote Cast".to_string(),
-                event_type: "log_nep297".to_string(),
-                filter: serde_json::json!({
-                    "And": [
-                        {"path": "account_id", "operator": {"Equals": "vote.dao"}},
-                        {"path": "event_standard", "operator": {"Equals": "venear"}},
-                        {"path": "event_event", "operator": {"Equals": "add_vote"}},
-                    ]
-                }),
-                severity: "info".to_string(),
-                summary_template: Some("House of Stake: Vote cast on proposal".to_string()),
-                environment: "production".to_string(),
-                dedup_key_template: Some("hos-vote-{transaction_id}".to_string()),
-            },
-        ],
-    }
-}
-
-/// Create config for monitoring any contract's NEP-297 events
-pub fn contract_events_config(
-    routing_key: &str,
-    contract_id: &str,
-    event_standard: Option<&str>,
-) -> PagerDutyAlertConfig {
-    let mut filter_conditions = vec![serde_json::json!({
-        "path": "account_id",
-        "operator": {"Equals": contract_id}
-    })];
-
-    if let Some(standard) = event_standard {
-        filter_conditions.push(serde_json::json!({
-            "path": "event_standard",
-            "operator": {"Equals": standard}
-        }));
-    }
-
+/// Create config for monitoring veNEAR pause calls
+pub fn venear_pause_config(routing_key: &str, venear_contract: &str) -> PagerDutyAlertConfig {
     PagerDutyAlertConfig {
         routing_key: routing_key.to_string(),
         reconnect_delay_secs: 5,
         subscriptions: vec![EventSubscription {
-            name: format!("Contract Events: {}", contract_id),
-            event_type: "log_nep297".to_string(),
-            filter: serde_json::json!({"And": filter_conditions}),
-            severity: "warning".to_string(),
-            summary_template: Some(format!("Event on {}: {{event_event}}", contract_id)),
-            environment: "production".to_string(),
-            dedup_key_template: Some(format!("{}-{{transaction_id}}", contract_id)),
+            name: "veNEAR: Contract Paused".to_string(),
+            account_id: venear_contract.to_string(),
+            method_name: Some("pause".to_string()),
+            severity: "critical".to_string(),
+            summary_template: Some(
+                "CRITICAL: veNEAR contract paused by {predecessor_id}".to_string(),
+            ),
+            dedup_key_template: Some("venear-pause-{tx_hash}".to_string()),
         }],
     }
 }
 
-/// Create config for monitoring transactions to a specific contract
-pub fn transaction_monitor_config(routing_key: &str, contract_id: &str) -> PagerDutyAlertConfig {
+/// Create config for monitoring any contract method calls
+pub fn method_call_config(
+    routing_key: &str,
+    contract_id: &str,
+    method_name: Option<&str>,
+) -> PagerDutyAlertConfig {
     PagerDutyAlertConfig {
         routing_key: routing_key.to_string(),
         reconnect_delay_secs: 5,
         subscriptions: vec![EventSubscription {
-            name: format!("Transactions to: {}", contract_id),
-            event_type: "tx_transaction".to_string(),
-            filter: serde_json::json!({
-                "And": [
-                    {"path": "receiver_id", "operator": {"Equals": contract_id}}
-                ]
-            }),
+            name: format!(
+                "Contract Call: {}{}",
+                contract_id,
+                method_name.map(|m| format!("::{}", m)).unwrap_or_default()
+            ),
+            account_id: contract_id.to_string(),
+            method_name: method_name.map(String::from),
             severity: "warning".to_string(),
-            summary_template: Some(format!("Transaction to {} from {{signer_id}}", contract_id)),
-            environment: "production".to_string(),
-            dedup_key_template: Some(format!("tx-{}-{{transaction_id}}", contract_id)),
+            summary_template: Some(format!(
+                "Call to {} - {{method_name}} from {{predecessor_id}}",
+                contract_id
+            )),
+            dedup_key_template: Some(format!("{}-{{tx_hash}}", contract_id)),
         }],
     }
 }
@@ -614,15 +626,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_house_of_stake_config() {
-        let config = house_of_stake_config("test-key");
-        assert_eq!(config.subscriptions.len(), 3);
-        assert_eq!(config.subscriptions[0].name, "HoS: New Proposal");
+    fn test_venear_pause_config() {
+        let config = venear_pause_config("test-key", "venear.near");
+        assert_eq!(config.subscriptions.len(), 1);
+        assert_eq!(config.subscriptions[0].method_name, Some("pause".to_string()));
     }
 
     #[test]
-    fn test_contract_events_config() {
-        let config = contract_events_config("test-key", "test.near", Some("nep141"));
+    fn test_method_call_config() {
+        let config = method_call_config("test-key", "test.near", Some("transfer"));
         assert_eq!(config.subscriptions.len(), 1);
+        assert_eq!(
+            config.subscriptions[0].method_name,
+            Some("transfer".to_string())
+        );
     }
 }
