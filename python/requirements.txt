@@ -1,2 +1,0 @@
-# NEAR PagerDuty Bridge Dependencies
-aiohttp>=3.9.0
