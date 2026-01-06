@@ -1,0 +1,58 @@
+name: Health Check Watchdog
+
+on:
+  schedule:
+    # Run every 5 minutes
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+    # Allow manual triggers for testing
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check health endpoint
+        id: health
+        run: |
+          response=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 "${{ secrets.SERVICE_URL }}/health" || echo "000")
+          echo "status_code=$response" >> $GITHUB_OUTPUT
+          if [ "$response" != "200" ]; then
+            echo "Health check failed with status: $response"
+            exit 1
+          fi
+          echo "Health check passed"
+
+      - name: Alert PagerDuty on failure
+        if: failure()
+        run: |
+          curl -X POST https://events.pagerduty.com/v2/enqueue \
+            -H "Content-Type: application/json" \
+            -d '{
+              "routing_key": "${{ secrets.PAGERDUTY_ROUTING_KEY }}",
+              "event_action": "trigger",
+              "dedup_key": "near-pagerduty-monitor-down",
+              "payload": {
+                "summary": "CRITICAL: NEAR PagerDuty Monitor is DOWN",
+                "severity": "critical",
+                "source": "github-actions-watchdog",
+                "custom_details": {
+                  "service_url": "${{ secrets.SERVICE_URL }}",
+                  "http_status": "${{ steps.health.outputs.status_code }}",
+                  "workflow_run": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                }
+              },
+              "client": "GitHub Actions Watchdog",
+              "client_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }'
+
+      - name: Resolve PagerDuty alert on success
+        if: success()
+        run: |
+          # Resolve any existing alert (idempotent - won't error if no alert exists)
+          curl -s -X POST https://events.pagerduty.com/v2/enqueue \
+            -H "Content-Type: application/json" \
+            -d '{
+              "routing_key": "${{ secrets.PAGERDUTY_ROUTING_KEY }}",
+              "event_action": "resolve",
+              "dedup_key": "near-pagerduty-monitor-down"
+            }' || true
