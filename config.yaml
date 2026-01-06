@@ -27,11 +27,68 @@ subscriptions:
     dedup_key_template: "venear-pause-{tx_hash}"
 
   - name: "veNEAR: Contract Unpaused"
-    account_id: "venear.near"  # Change to your veNEAR contract
+    account_id: "venear.near"
     method_name: "unpause"
     severity: warning
     summary_template: "veNEAR contract unpaused by {predecessor_id}"
     dedup_key_template: "venear-unpause-{tx_hash}"
+
+  # ==========================================================================
+  # veNEAR Governance Changes (error level)
+  # ==========================================================================
+
+  - name: "veNEAR: Guardians Changed"
+    account_id: "venear.near"
+    method_name: "set_guardians"
+    severity: error
+    summary_template: "veNEAR guardians changed by {predecessor_id}"
+    dedup_key_template: "venear-guardians-{tx_hash}"
+
+  - name: "veNEAR: Ownership Transfer Proposed"
+    account_id: "venear.near"
+    method_name: "propose_new_owner_account_id"
+    severity: error
+    summary_template: "veNEAR ownership transfer proposed by {predecessor_id}"
+    dedup_key_template: "venear-owner-propose-{tx_hash}"
+
+  - name: "veNEAR: Ownership Transfer Accepted"
+    account_id: "venear.near"
+    method_name: "accept_ownership"
+    severity: error
+    summary_template: "veNEAR ownership transfer accepted by {predecessor_id}"
+    dedup_key_template: "venear-owner-accept-{tx_hash}"
+
+  - name: "veNEAR: Lockup Contract Updated"
+    account_id: "venear.near"
+    method_name: "set_lockup_contract"
+    severity: error
+    summary_template: "veNEAR lockup contract code updated by {predecessor_id}"
+    dedup_key_template: "venear-lockup-contract-{tx_hash}"
+
+  # ==========================================================================
+  # veNEAR User Activity (info level)
+  # ==========================================================================
+
+  - name: "veNEAR: New Lockup Deployed"
+    account_id: "venear.near"
+    method_name: "deploy_lockup"
+    severity: info
+    summary_template: "New veNEAR lockup deployed by {predecessor_id}"
+    dedup_key_template: "venear-lockup-{tx_hash}"
+
+  - name: "veNEAR: Delegation"
+    account_id: "venear.near"
+    method_name: "delegate_all"
+    severity: info
+    summary_template: "veNEAR delegation by {predecessor_id}"
+    dedup_key_template: "venear-delegate-{tx_hash}"
+
+  - name: "veNEAR: Undelegation"
+    account_id: "venear.near"
+    method_name: "undelegate"
+    severity: info
+    summary_template: "veNEAR undelegation by {predecessor_id}"
+    dedup_key_template: "venear-undelegate-{tx_hash}"
 
   # ==========================================================================
   # Example: Monitor all actions on a contract (no method filter)
