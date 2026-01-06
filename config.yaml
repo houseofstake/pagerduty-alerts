@@ -91,6 +91,38 @@ subscriptions:
     dedup_key_template: "venear-undelegate-{tx_hash}"
 
   # ==========================================================================
+  # House of Stake Voting (vote.dao)
+  # ==========================================================================
+
+  - name: "HoS: New Proposal"
+    account_id: "vote.dao"
+    method_name: "create_proposal"
+    severity: info
+    summary_template: "House of Stake: New proposal created by {predecessor_id}"
+    dedup_key_template: "hos-proposal-{tx_hash}"
+
+  - name: "HoS: Vote Cast"
+    account_id: "vote.dao"
+    method_name: "vote"
+    severity: info
+    summary_template: "House of Stake: Vote cast by {predecessor_id}"
+    dedup_key_template: "hos-vote-{tx_hash}"
+
+  - name: "HoS: Proposal Approved"
+    account_id: "vote.dao"
+    method_name: "approve_proposal"
+    severity: info
+    summary_template: "House of Stake: Proposal approved by reviewer {predecessor_id}"
+    dedup_key_template: "hos-approve-{tx_hash}"
+
+  - name: "HoS: Proposal Rejected"
+    account_id: "vote.dao"
+    method_name: "reject_proposal"
+    severity: info
+    summary_template: "House of Stake: Proposal rejected by reviewer {predecessor_id}"
+    dedup_key_template: "hos-reject-{tx_hash}"
+
+  # ==========================================================================
   # Example: Monitor all actions on a contract (no method filter)
   # ==========================================================================
 
