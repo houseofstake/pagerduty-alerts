@@ -1,17 +1,11 @@
 //! Main entry point for the NEAR PagerDuty Monitor binary
 
-use axum::{
-    extract::State,
-    http::StatusCode,
-    routing::{get, post},
-    Json, Router,
-};
-use std::future::IntoFuture;
+use axum::{routing::get, Router};
 use near_pagerduty_alerts::venear_pause_config;
 use near_pagerduty_alerts::PagerDutyAlertConfig;
+use std::future::IntoFuture;
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::Arc;
 
 fn load_config_from_file(path: &str) -> Result<PagerDutyAlertConfig, anyhow::Error> {
     let content = std::fs::read_to_string(path)?;
@@ -30,84 +24,9 @@ fn load_config_from_file(path: &str) -> Result<PagerDutyAlertConfig, anyhow::Err
     Ok(config)
 }
 
-#[derive(Clone)]
-struct AppState {
-    routing_key: String,
-}
-
 /// Health check endpoint
 async fn health() -> &'static str {
     "OK"
-}
-
-/// Railway webhook handler - forwards deployment events to PagerDuty
-async fn railway_webhook(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<serde_json::Value>,
-) -> StatusCode {
-    log::info!("Received Railway webhook: {:?}", payload);
-
-    // Extract relevant info from Railway webhook
-    let event_type = payload
-        .get("type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-
-    let status = payload
-        .get("status")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-
-    // Only alert on failures or specific events
-    let (summary, severity) = match (event_type, status) {
-        (_, "FAILED") => (
-            format!("Railway deployment FAILED: {}", event_type),
-            "error",
-        ),
-        (_, "CRASHED") => (
-            format!("Railway service CRASHED: {}", event_type),
-            "critical",
-        ),
-        ("DEPLOY", "SUCCESS") => (
-            format!("Railway deployment successful"),
-            "info",
-        ),
-        _ => {
-            log::debug!("Ignoring Railway event: type={}, status={}", event_type, status);
-            return StatusCode::OK;
-        }
-    };
-
-    // Send to PagerDuty
-    let client = reqwest::Client::new();
-    let pd_event = serde_json::json!({
-        "routing_key": state.routing_key,
-        "event_action": "trigger",
-        "dedup_key": format!("railway-{}-{}", event_type, status),
-        "payload": {
-            "summary": summary,
-            "severity": severity,
-            "source": "railway",
-            "custom_details": payload,
-        },
-        "client": "Railway Webhook",
-    });
-
-    match client
-        .post("https://events.pagerduty.com/v2/enqueue")
-        .json(&pd_event)
-        .send()
-        .await
-    {
-        Ok(resp) => {
-            log::info!("PagerDuty response: {:?}", resp.status());
-            StatusCode::OK
-        }
-        Err(e) => {
-            log::error!("Failed to send to PagerDuty: {:?}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        }
-    }
 }
 
 #[tokio::main]
@@ -147,16 +66,8 @@ async fn main() -> Result<(), anyhow::Error> {
         );
     }
 
-    // Create app state for HTTP handlers
-    let state = Arc::new(AppState {
-        routing_key: config.routing_key.clone(),
-    });
-
-    // Start HTTP server for health checks and webhooks
-    let app = Router::new()
-        .route("/health", get(health))
-        .route("/webhook/railway", post(railway_webhook))
-        .with_state(state);
+    // Start HTTP server for health checks
+    let app = Router::new().route("/health", get(health));
 
     let port: u16 = std::env::var("PORT")
         .unwrap_or_else(|_| "8080".to_string())
