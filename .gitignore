@@ -152,3 +152,7 @@ Cargo.lock
 *.pem
 *.key
 
+# Claude Code
+CLAUDE.md
+.claude/
+
